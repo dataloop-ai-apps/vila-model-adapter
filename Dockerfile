@@ -11,23 +11,13 @@ FROM nvcr.io/nvidia/pytorch:24.06-py3
 # GENERAL REQUIREMENTS 
 # =================================================================================
 
-WORKDIR /app
-ENV PYTHONPATH=/app:$PYTHONPATH
+WORKDIR /tmp/app
+ENV PYTHONPATH=/tmp/app:$PYTHONPATH
 RUN apt-get update && apt-get install -y \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o ~/miniconda.sh \
-    && sh ~/miniconda.sh -b -p /opt/conda \
-    && rm ~/miniconda.sh
-ENV PATH /opt/conda/bin:$PATH
-
-# Add conda-forge channel and set retry attempts
-RUN conda config --add channels conda-forge \
-    && conda config --set remote_connect_timeout_secs 60 \
-    && conda config --set remote_read_timeout_secs 120 \
-    && conda config --set remote_max_retries 5
 
 # =================================================================================
 # DATALOOP AI REQUIREMENTS
@@ -41,5 +31,11 @@ RUN pip install dtlpy openai transformers
 # Using the following Dockerfile as reference:
 # https://github.com/NVlabs/VILA/blob/main/Dockerfile
 
-RUN git clone https://github.com/NVlabs/VILA.git . \
-    && for i in {1..3}; do bash ./environment_setup.sh vila && break || sleep 15; done
+RUN git clone https://github.com/NVlabs/VILA.git .
+RUN pip install --upgrade pip setuptools \
+    && pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.8/flash_attn-2.5.8+cu122torch2.3cxx11abiFALSE-cp310-cp310-linux_x86_64.whl \
+    && pip install -e ".[train,eval]" \
+    && pip install triton==3.1.0 \
+    && site_pkg_path=$(python -c 'import site; print(site.getsitepackages()[0])') \
+    && cp -rv ./llava/train/deepspeed_replace/* "$site_pkg_path/deepspeed/" \
+    && pip install protobuf==3.20.*
