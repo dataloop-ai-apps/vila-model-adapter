@@ -32,10 +32,13 @@ RUN pip install dtlpy openai transformers
 # https://github.com/NVlabs/VILA/blob/main/Dockerfile
 
 RUN git clone https://github.com/NVlabs/VILA.git .
-RUN pip install --upgrade pip setuptools \
-    && pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.8/flash_attn-2.5.8+cu122torch2.3cxx11abiFALSE-cp310-cp310-linux_x86_64.whl \
-    && pip install -e ".[train,eval]" \
-    && pip install triton==3.1.0 \
-    && site_pkg_path=$(python -c 'import site; print(site.getsitepackages()[0])') \
-    && cp -rv ./llava/train/deepspeed_replace/* "$site_pkg_path/deepspeed/" \
-    && pip install protobuf==3.20.*
+# RUN pip install --upgrade pip setuptools \
+#     && pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.8/flash_attn-2.5.8+cu122torch2.3cxx11abiFALSE-cp310-cp310-linux_x86_64.whl \
+#     && pip install -e ".[train,eval]" \
+#     && pip install triton==3.1.0 \
+#     && site_pkg_path=$(python -c 'import site; print(site.getsitepackages()[0])') \
+#     && cp -rv ./llava/train/deepspeed_replace/* "$site_pkg_path/deepspeed/" \
+#     && pip install protobuf==3.20.*
+
+# Give write permissions to everyone
+RUN chmod -R a+w /tmp/app
