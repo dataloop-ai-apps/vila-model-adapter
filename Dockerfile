@@ -18,6 +18,13 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+RUN usermod -aG sudo $(getent passwd 1000 | cut -d: -f1) && \
+echo "$(getent passwd 1000 | cut -d: -f1) ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/1000 && \
+chmod 0440 /etc/sudoers.d/1000
+
+RUN chown -R 1000:1000 /tmp/app
+
+USER 1000
 
 # =================================================================================
 # DATALOOP AI REQUIREMENTS
@@ -39,6 +46,3 @@ RUN pip install --upgrade pip setuptools \
     && site_pkg_path=$(python -c 'import site; print(site.getsitepackages()[0])') \
     && cp -rv ./llava/train/deepspeed_replace/* "$site_pkg_path/deepspeed/" \
     && pip install protobuf==3.20.*
-
-# Give write permissions to everyone
-RUN chmod -R a+w /tmp/app
