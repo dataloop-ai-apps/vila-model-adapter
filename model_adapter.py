@@ -41,7 +41,7 @@ class ModelAdapter(dl.BaseModelAdapter):
             "python",
             "-W",
             "ignore",
-            "/tmp/app/server.py",
+            "/tmp/app/custom_server.py",
             "--model-path",
             model_path,
             "--conv-mode",
