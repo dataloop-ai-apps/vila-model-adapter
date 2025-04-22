@@ -36,8 +36,7 @@ ENV PATH="/tmp/app/.venv/bin:$PATH"
 
 # Use venv's pip
 RUN pip install --upgrade pip setuptools
-RUN pip install dtlpy==1.105.6 --upgrade
-RUN pip install https://storage.googleapis.com/dtlpy/agent/dtlpy_agent-1.105.6.100-py3-none-any.whl --upgrade
+RUN pip install dtlpy
 
 RUN pip install \
     openai \
