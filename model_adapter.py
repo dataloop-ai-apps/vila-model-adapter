@@ -49,7 +49,7 @@ class ModelAdapter(dl.BaseModelAdapter):
                 "python",
                 "-W",
                 "ignore",
-                "/tmp/app/custom_server.py",
+                "/tmp/app/VILA/custom_server.py",
                 "--model-path",
                 model_path,
                 "--conv-mode",
