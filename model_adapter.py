@@ -2,11 +2,9 @@ import base64
 import dtlpy as dl
 import logging
 import requests
-import json
 import time
 import subprocess
-import threading
-import openai
+from openai import OpenAI
 import re
 
 logger = logging.getLogger("vila-adapter")
@@ -26,37 +24,47 @@ class ModelAdapter(dl.BaseModelAdapter):
         # Check if VILA model path is provided
         model_path = self.configuration.get("model_path", "Efficient-Large-Model/NVILA-8B")
         conv_mode = self.configuration.get("conv_mode", "auto")
-        port = self.configuration.get("port", 8032)
+        port = self.configuration.get("port", 8000)
         self.vila_base_url = f"http://localhost:{port}"
 
         # Initialize OpenAI client that talks to the local VILA server. We use a fake
         # API‑key because the server does not validate it – it only expects the
         # header to exist in order to mimic the OpenAI API.
-        self.client = openai.OpenAI(
+        self.client = OpenAI(
             base_url=self.vila_base_url, api_key=self.configuration.get("openai_api_key", "fake-key")
         )
+        # Check if VILA server is already running
+        server_running = False
+        try:
+            resp = requests.get(self.vila_base_url, timeout=2)
+            if resp.status_code < 500:
+                server_running = True
+                logger.info(f"VILA server already running at {self.vila_base_url}, skipping start.")
+        except requests.RequestException:
+            pass
 
         # Start VILA server as a subprocess
-        server_command = [
-            "python",
-            "-W",
-            "ignore",
-            "/tmp/app/custom_server.py",
-            "--model-path",
-            model_path,
-            "--conv-mode",
-            conv_mode,
-            "--port",
-            str(port),
-        ]
+        if not server_running:
+            server_command = [
+                "python",
+                "-W",
+                "ignore",
+                "/tmp/app/custom_server.py",
+                "--model-path",
+                model_path,
+                "--conv-mode",
+                conv_mode,
+                "--port",
+                str(port),
+            ]
 
-        self.vila_server_process = subprocess.Popen(
-            server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
-        )
+            self.vila_server_process = subprocess.Popen(
+                server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+            )
 
-        # Wait for server to start
-        logger.info(f"Starting VILA server with model: {model_path}")
-        self._wait_for_server_ready()
+            # Wait for server to start
+            logger.info(f"Starting VILA server with model: {model_path}")
+            self._wait_for_server_ready()
 
     def call_model(self, messages):
         """Call the VILA model server with messages"""
@@ -65,6 +73,10 @@ class ModelAdapter(dl.BaseModelAdapter):
         temperature = self.configuration.get("temperature", 0.2)
         top_p = self.configuration.get("top_p", 0.9)
         model_name = self.configuration.get("model_path", "Efficient-Large-Model/NVILA-15B").split("/")[-1]
+        if not self.client:
+            self.client = OpenAI(
+                base_url=self.vila_base_url, api_key=self.configuration.get("openai_api_key", "fake-key")
+            )
 
         try:
             response = self.client.chat.completions.create(
@@ -142,6 +154,7 @@ class ModelAdapter(dl.BaseModelAdapter):
         video_md_pattern = re.compile(r"\[video_url\]\(([^)]+)\)", re.IGNORECASE)
 
         for prompt_item in batch:
+            prompt_item: dl.PromptItem = prompt_item
             # Generate messages using prompt_item.to_messages
             messages = prompt_item.to_messages(model_name=model_name)
             # Process messages to handle markdown video links within text
@@ -151,28 +164,50 @@ class ModelAdapter(dl.BaseModelAdapter):
                 content = message['content']
                 new_content_list = []
 
-                # Handle plain text content
-                text_value = content
-                video_links = video_md_pattern.findall(text_value)
-                clean_text = video_md_pattern.sub("", text_value).strip()
-                if clean_text:
-                    new_content_list.append({"type": "text", "text": clean_text})
-                for link in video_links:
-                    new_content_list.append(
-                        {
-                            "type": "video_url",
-                            "video_url": {"url": link},
-                            "frames": video_frames,
-                        }
-                    )
+                # Content can be a string or a list of dicts
+                if isinstance(content, str):
+                    # Handle simple string content (same as before)
+                    text_value = content
+                    video_links = video_md_pattern.findall(text_value)
+                    clean_text = video_md_pattern.sub("", text_value).strip()
+                    if clean_text:
+                        new_content_list.append({"type": "text", "text": clean_text})
+                    for link in video_links:
+                        new_content_list.append(
+                            {
+                                "type": "video_url",
+                                "video_url": {"url": link},
+                            }
+                        )
+                elif isinstance(content, list):
+                    # Handle list content (e.g., text and images)
+                    for element in content:
+                        if element.get("type") == "text":
+                            text_value = element.get("text", "")
+                            video_links = video_md_pattern.findall(text_value)
+                            clean_text = video_md_pattern.sub("", text_value).strip()
+                            if clean_text:
+                                new_content_list.append({"type": "text", "text": clean_text})
+                            for link in video_links:
+                                new_content_list.append(
+                                    {
+                                        "type": "video_url",
+                                        "video_url": {"url": link},
+                                    }
+                                )
+                        else:
+                            # Pass through non-text elements (e.g., images) unchanged
+                            new_content_list.append(element)
+                else:
+                     logger.warning(f"Unexpected content type in message: {type(content)}. Skipping.")
+                     continue # Skip this message or handle appropriately
+
 
                 # Reconstruct the message: if content became a list with only one text item, simplify back to string
                 if len(new_content_list) == 1 and new_content_list[0].get("type") == "text":
                     processed_messages.append({"role": role, "content": new_content_list[0]["text"]})
                 elif len(new_content_list) > 0 : # Use list for multiple parts or non-text parts
                     processed_messages.append({"role": role, "content": new_content_list})
-                else: # Handle cases where processing might result in empty content
-                    processed_messages.append({"role": role, "content": ""})
 
             # Optional retrieval-augmented context (applied after processing)
             nearest_items = prompt_item.prompts[-1].metadata.get("nearestItems", [])
