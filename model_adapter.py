@@ -1,16 +1,13 @@
 import base64
 import dtlpy as dl
 import logging
-import os
 import requests
-import json
 import time
 import subprocess
-import threading
-from io import BytesIO
-from PIL import Image
+from openai import OpenAI
+import re
 
-logger = logging.getLogger('vila-adapter')
+logger = logging.getLogger("vila-adapter")
 
 
 class ModelAdapter(dl.BaseModelAdapter):
@@ -18,117 +15,89 @@ class ModelAdapter(dl.BaseModelAdapter):
         super().__init__(model_entity)
         self.vila_server_process = None
         self.vila_base_url = None
+        self.client = None
 
     def load(self, local_path, **kwargs):
         """Load VILA model server and configuration"""
         self.adapter_defaults.upload_annotations = False
 
         # Check if VILA model path is provided
-        model_path = self.configuration.get("model_path", "Efficient-Large-Model/NVILA-15B")
+        model_path = self.configuration.get("model_path", "Efficient-Large-Model/NVILA-8B")
         conv_mode = self.configuration.get("conv_mode", "auto")
         port = self.configuration.get("port", 8000)
         self.vila_base_url = f"http://localhost:{port}"
 
-        # Start VILA server as a subprocess
-        server_command = [
-            "python",
-            "-W",
-            "ignore",
-            "/app/server.py",
-            "--model-path",
-            model_path,
-            "--conv-mode",
-            conv_mode,
-            "--port",
-            str(port),
-        ]
-
-        self.vila_server_process = subprocess.Popen(
-            server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+        # Initialize OpenAI client that talks to the local VILA server. We use a fake
+        # API‑key because the server does not validate it – it only expects the
+        # header to exist in order to mimic the OpenAI API.
+        self.client = OpenAI(
+            base_url=self.vila_base_url, api_key=self.configuration.get("openai_api_key", "fake-key")
         )
-
-        # Start threads to monitor stdout and stderr
-        threading.Thread(
-            target=self._log_stream, args=(self.vila_server_process.stdout, logger.info), daemon=True
-        ).start()
-        threading.Thread(
-            target=self._log_stream, args=(self.vila_server_process.stderr, logger.error), daemon=True
-        ).start()
-
-        # Wait for server to start
-        logger.info(f"Starting VILA server with model: {model_path}")
-        time.sleep(10)  # Give some time for the server to start
-
-        # Test connection to the server
+        # Check if VILA server is already running
+        server_running = False
         try:
-            response = requests.get(f"{self.vila_base_url}")
-            if response.status_code == 404:
-                logger.info("VILA server is running")
-            else:
-                logger.error(f"Unexpected response from VILA server: {response.status_code}")
-        except Exception as e:
-            logger.error(f"Failed to connect to VILA server: {e}")
-            raise ValueError(f"Failed to start VILA server: {e}")
+            resp = requests.get(self.vila_base_url, timeout=2)
+            if resp.status_code < 500:
+                server_running = True
+                logger.info(f"VILA server already running at {self.vila_base_url}, skipping start.")
+        except requests.RequestException:
+            pass
 
-    def _log_stream(self, stream, log_func):
-        """Helper function to log output from subprocesses"""
-        for line in stream:
-            log_func(line.strip())
+        # Start VILA server as a subprocess
+        if not server_running:
+            server_command = [
+                "python",
+                "-W",
+                "ignore",
+                "/tmp/app/custom_server.py",
+                "--model-path",
+                model_path,
+                "--conv-mode",
+                conv_mode,
+                "--port",
+                str(port),
+            ]
+
+            self.vila_server_process = subprocess.Popen(
+                server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+            )
+
+            # Wait for server to start
+            logger.info(f"Starting VILA server with model: {model_path}")
+            self._wait_for_server_ready()
 
     def call_model(self, messages):
         """Call the VILA model server with messages"""
-        stream = self.configuration.get("stream", True)
+        stream = self.configuration.get("stream", False)
         max_tokens = self.configuration.get("max_tokens", 512)
         temperature = self.configuration.get("temperature", 0.2)
         top_p = self.configuration.get("top_p", 0.9)
         model_name = self.configuration.get("model_path", "Efficient-Large-Model/NVILA-15B").split("/")[-1]
-
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "model": model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "stream": stream,
-        }
+        if not self.client:
+            self.client = OpenAI(
+                base_url=self.vila_base_url, api_key=self.configuration.get("openai_api_key", "fake-key")
+            )
 
         try:
+            response = self.client.chat.completions.create(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stream=stream,
+                model=model_name,
+            )
+
             if stream:
-                response = requests.post(
-                    f"{self.vila_base_url}/chat/completions", headers=headers, json=data, stream=True
-                )
-                response.raise_for_status()
-
-                for line in response.iter_lines():
-                    if line:
-                        line = line.decode('utf-8')
-                        if line.startswith("data: "):
-                            line = line[6:]  # Remove "data: " prefix
-                            if line == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(line)
-                                content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                                yield content
-                            except json.JSONDecodeError:
-                                logger.error(f"Failed to parse JSON: {line}")
+                for chunk in response:
+                    # When streaming, the client returns `ChatCompletionChunk` objects
+                    yield chunk.choices[0].delta.content or ""
             else:
-                response = requests.post(f"{self.vila_base_url}/chat/completions", headers=headers, json=data)
-                response.raise_for_status()
-                response_json = response.json()
-                content = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-                if isinstance(content, list):
-                    # Handle case where content is a list of text parts
-                    for item in content:
-                        if item.get("type") == "text":
-                            yield item.get("text", "")
-                else:
-                    yield content
+                # Non‑streaming – a single response object is returned
+                yield response.choices[0].message.content or ""
 
         except Exception as e:
-            logger.error(f"Error calling VILA model: {e}")
+            logger.error(f"Error calling VILA model via OpenAI client: {e}")
             yield f"Error: {str(e)}"
 
     def prepare_item_func(self, item: dl.Item):
@@ -136,95 +105,138 @@ class ModelAdapter(dl.BaseModelAdapter):
         prompt_item = dl.PromptItem.from_item(item)
         return prompt_item
 
-    def _get_image_base64(self, image_path):
-        """Convert image to base64"""
-        with open(image_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode("utf-8")
+    def _wait_for_server_ready(self, timeout: int = 60, interval: float = 1.0):
+        """Poll the server root endpoint until it responds or the timeout is reached.
+
+        Args:
+            timeout: Maximum amount of seconds to wait.
+            interval: Delay between consecutive probes in seconds.
+
+        Raises:
+            RuntimeError: If the server did not become responsive in the
+                allotted time.
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(self.vila_base_url, timeout=2)
+                if response.status_code < 500:
+                    logger.info("VILA server is running and responsive")
+                    return
+            except requests.RequestException:
+                # The server is not up yet
+                pass
+
+            time.sleep(interval)
+
+        raise RuntimeError(f"Timed out after {timeout}s while waiting for VILA server to start on {self.vila_base_url}")
+
+    def _get_image_base64(self, image_path: str) -> str:
+        """Read an image from *image_path* and return a base-64 encoded string."""
+        with open(image_path, "rb") as img_fd:
+            return base64.b64encode(img_fd.read()).decode("utf-8")
 
     def predict(self, batch, **kwargs):
-        """Predict with VILA model"""
-        system_prompt = self.model_entity.configuration.get('system_prompt', '')
+        """Run inference on a batch of *PromptItem*s using the local VILA server.
+
+        The method converts the Dataloop *PromptItem* structure to the message
+        format expected by the OpenAI compatible endpoint exposed by the VILA
+        server (see ``server.py``). It supports plain text, images and videos
+        (either provided as URLs or embedded via Markdown such as
+        ``[video_url](https://example.com/video.mp4)``).
+        """
+        # NOTE: System prompt is not allowed by model
         add_metadata = self.configuration.get("add_metadata")
         model_name = self.model_entity.name
+        video_frames = self.configuration.get("video_frames", 8)
+
+        # Regex pattern to detect video markdown links – case insensitive.
+        video_md_pattern = re.compile(r"\[video_url\]\(([^)]+)\)", re.IGNORECASE)
 
         for prompt_item in batch:
-            # Get all messages including model annotations
-            messages = []
+            prompt_item: dl.PromptItem = prompt_item
+            # Generate messages using prompt_item.to_messages
+            messages = prompt_item.to_messages(model_name=model_name)
+            # Process messages to handle markdown video links within text
+            processed_messages = []
+            for message in messages:
+                role = message['role']
+                content = message['content']
+                new_content_list = []
 
-            # Add system message
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-
-            # Process all prompts
-            for prompt in prompt_item.prompts:
-                role = "user" if prompt.user_id else "assistant"
-
-                # Handle text-only messages
-                if all(msg.get('mimetype') == dl.PromptType.TEXT for msg in prompt.message.get('content', [])):
-                    text_content = " ".join(
-                        msg.get('value', '')
-                        for msg in prompt.message.get('content', [])
-                        if msg.get('mimetype') == dl.PromptType.TEXT
-                    )
-                    messages.append({"role": role, "content": text_content})
+                # Content can be a string or a list of dicts
+                if isinstance(content, str):
+                    # Handle simple string content (same as before)
+                    text_value = content
+                    video_links = video_md_pattern.findall(text_value)
+                    clean_text = video_md_pattern.sub("", text_value).strip()
+                    if clean_text:
+                        new_content_list.append({"type": "text", "text": clean_text})
+                    for link in video_links:
+                        new_content_list.append(
+                            {
+                                "type": "video_url",
+                                "video_url": {"url": link},
+                            }
+                        )
+                elif isinstance(content, list):
+                    # Handle list content (e.g., text and images)
+                    for element in content:
+                        if element.get("type") == "text":
+                            text_value = element.get("text", "")
+                            video_links = video_md_pattern.findall(text_value)
+                            clean_text = video_md_pattern.sub("", text_value).strip()
+                            if clean_text:
+                                new_content_list.append({"type": "text", "text": clean_text})
+                            for link in video_links:
+                                new_content_list.append(
+                                    {
+                                        "type": "video_url",
+                                        "video_url": {"url": link},
+                                    }
+                                )
+                        else:
+                            # Pass through non-text elements (e.g., images) unchanged
+                            new_content_list.append(element)
                 else:
-                    # Handle multimodal messages (text and images)
-                    content_list = []
+                     logger.warning(f"Unexpected content type in message: {type(content)}. Skipping.")
+                     continue # Skip this message or handle appropriately
 
-                    for msg in prompt.message.get('content', []):
-                        if msg.get('mimetype') == dl.PromptType.TEXT:
-                            content_list.append({"type": "text", "text": msg.get('value', '')})
-                        elif msg.get('mimetype') in [dl.PromptType.IMAGE, 'image/jpeg', 'image/png']:
-                            # For files in Dataloop, download them first
-                            if isinstance(msg.get('value'), str) and msg.get('value').startswith('http'):
-                                image_url = msg.get('value')
-                            else:
-                                # Download the image and convert to base64
-                                temp_path = prompt_item.download(msg.get('value'), save_locally=True)
-                                image_data = self._get_image_base64(temp_path)
-                                image_url = f"data:image/jpeg;base64,{image_data}"
 
-                            content_list.append({"type": "image_url", "image_url": {"url": image_url}})
+                # Reconstruct the message: if content became a list with only one text item, simplify back to string
+                if len(new_content_list) == 1 and new_content_list[0].get("type") == "text":
+                    processed_messages.append({"role": role, "content": new_content_list[0]["text"]})
+                elif len(new_content_list) > 0 : # Use list for multiple parts or non-text parts
+                    processed_messages.append({"role": role, "content": new_content_list})
 
-                    messages.append({"role": role, "content": content_list})
-
-            # Add context from nearest items if available
-            nearest_items = prompt_item.prompts[-1].metadata.get('nearestItems', [])
-            if len(nearest_items) > 0:
+            # Optional retrieval-augmented context (applied after processing)
+            nearest_items = prompt_item.prompts[-1].metadata.get("nearestItems", [])
+            if nearest_items:
                 context = prompt_item.build_context(nearest_items=nearest_items, add_metadata=add_metadata)
                 logger.info(f"Nearest items Context: {context}")
-                messages.append({"role": "assistant", "content": context})
+                # Append context as assistant message
+                processed_messages.append({"role": "assistant", "content": context})
 
-            # Call the model and process the response
-            stream_response = self.call_model(messages=messages)
-            response = ""
+            # Call model and stream/collect the response
+            stream_response = self.call_model(messages=processed_messages)
+            accumulated_response = ""
             for chunk in stream_response:
-                #  Build text that includes previous stream
-                response += chunk
+                accumulated_response += chunk
                 prompt_item.add(
-                    message={"role": "assistant", "content": [{"mimetype": dl.PromptType.TEXT, "value": response}]},
-                    model_info={'name': model_name, 'confidence': 1.0, 'model_id': self.model_entity.id},
+                    message={
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "mimetype": dl.PromptType.TEXT,
+                                "value": accumulated_response,
+                            }
+                        ],
+                    },
+                    model_info={
+                        "name": model_name,
+                        "confidence": 1.0,
+                        "model_id": self.model_entity.id,
+                    },
                 )
-
+        # Return an empty list to conform to the Dataloop SDK expectations
         return []
-
-    def __del__(self):
-        """Clean up resources when the adapter is destroyed"""
-        if self.vila_server_process:
-            logger.info("Shutting down VILA server")
-            self.vila_server_process.terminate()
-            try:
-                self.vila_server_process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.vila_server_process.kill()
-
-
-if __name__ == '__main__':
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
-    model = dl.models.get(model_id="")
-    item = dl.items.get(item_id="")
-    a = ModelAdapter(model)
-    a.predict_items([item])
