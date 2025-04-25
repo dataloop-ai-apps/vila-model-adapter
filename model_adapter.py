@@ -46,7 +46,7 @@ class ModelAdapter(dl.BaseModelAdapter):
         # Start VILA server as a subprocess
         if not server_running:
             server_command = [
-                "python",
+                "/opt/conda/envs/vila_env/bin/python",
                 "-W",
                 "ignore",
                 "/tmp/app/VILA/custom_server.py",
