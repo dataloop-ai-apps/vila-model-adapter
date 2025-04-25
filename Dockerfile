@@ -71,7 +71,7 @@ RUN . activate $CONDA_ENV_NAME && \
     pip install protobuf==3.20.*
 
 USER 1000
-WORKDIR /tmp/app
+WORKDIR /tmp/app/VILA
 # docker build -t gcr.io/viewo-g/piper/agent/runner/apps/villa-model-adapter:0.2.10 -f Dockerfile .
 # docker push gcr.io/viewo-g/piper/agent/runner/apps/villa-model-adapter:0.2.10
 
