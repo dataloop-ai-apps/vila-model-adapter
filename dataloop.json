@@ -8,7 +8,8 @@
     "Gen AI": "LMM",
     "Media Type": [
       "Text",
-      "Image"
+      "Image",
+      "Video"
     ],
     "License": "Apache 2.0",
     "Deployed By": "Dataloop"
@@ -26,9 +27,9 @@
       {
         "name": "vila-model-adapter-deploy",
         "runtime": {
-          "podType": "gpu-t4",
+          "podType": "gpu-a100-s",
           "concurrency": 1,
-          "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/vila-model-adapter:0.0.1",
+          "runnerImage": "gcr.io/viewo-g/piper/agent/runner/gpu/vila-model-adapter:0.10.0",
           "autoscaler": {
             "minReplicas": 0,
             "maxReplicas": 2,
@@ -146,8 +147,7 @@
           "max_tokens": 512,
           "temperature": 0.2,
           "top_p": 0.9,
-          "stream": true,
-          "system_prompt": "You are a helpful vision language assistant that can understand images and videos to answer questions accurately."
+          "stream": false
         },
         "description": "NVILA-15B is a large, efficient vision language model designed for high-quality multimodal understanding, supporting both images and videos."
       },
@@ -162,8 +162,7 @@
           "max_tokens": 512,
           "temperature": 0.2,
           "top_p": 0.9,
-          "stream": true,
-          "system_prompt": "You are a helpful vision language assistant that can understand images and videos to answer questions accurately."
+          "stream": false
         },
         "description": "NVILA-15B-Lite is an optimized version of NVILA-15B with better efficiency while maintaining high accuracy for multimodal understanding."
       },
@@ -178,8 +177,7 @@
           "max_tokens": 512,
           "temperature": 0.2,
           "top_p": 0.9,
-          "stream": true,
-          "system_prompt": "You are a helpful vision language assistant that can understand images and videos to answer questions accurately."
+          "stream": false
         },
         "description": "NVILA-8B is a medium-sized, efficient vision language model designed for multimodal understanding, offering a good balance between performance and efficiency."
       },
@@ -194,8 +192,7 @@
           "max_tokens": 512,
           "temperature": 0.2,
           "top_p": 0.9,
-          "stream": true,
-          "system_prompt": "You are a helpful vision language assistant that can understand images and videos to answer questions accurately."
+          "stream": false
         },
         "description": "NVILA-8B-Lite is an optimized version of NVILA-8B, designed for efficient deployment while maintaining good performance for multimodal tasks."
       },
@@ -210,26 +207,9 @@
           "max_tokens": 512,
           "temperature": 0.2,
           "top_p": 0.9,
-          "stream": true,
-          "system_prompt": "You are a helpful vision language assistant that can understand images and videos to answer questions accurately."
+          "stream": false
         },
         "description": "VILA-1.5-3B is a compact vision language model optimized for both image and video understanding, suitable for deployment on edge devices."
-      },
-      {
-        "name": "longvila",
-        "moduleName": "vila-model-adapter-module",
-        "scope": "project",
-        "status": "pre-trained",
-        "configuration": {
-          "model_path": "Efficient-Large-Model/LongVILA",
-          "conv_mode": "auto",
-          "max_tokens": 1024,
-          "temperature": 0.2,
-          "top_p": 0.9,
-          "stream": true,
-          "system_prompt": "You are a helpful vision language assistant that can understand long videos and multiple images to answer questions accurately."
-        },
-        "description": "LongVILA supports long video understanding with a context length of more than 1M tokens and multi-modal sequence parallel processing."
       }
     ]
   }
