@@ -363,3 +363,4 @@ pyrightconfig.json
 *.whl
 /new-sdk-env
 .vscode/
+_*.ipynb
