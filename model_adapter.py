@@ -5,7 +5,9 @@ import requests
 import time
 import subprocess
 from openai import OpenAI
+import socket
 import re
+import select
 
 logger = logging.getLogger("vila-adapter")
 
@@ -34,14 +36,7 @@ class ModelAdapter(dl.BaseModelAdapter):
             base_url=self.vila_base_url, api_key=self.configuration.get("openai_api_key", "fake-key")
         )
         # Check if VILA server is already running
-        server_running = False
-        try:
-            resp = requests.get(self.vila_base_url, timeout=2)
-            if resp.status_code < 500:
-                server_running = True
-                logger.info(f"VILA server already running at {self.vila_base_url}, skipping start.")
-        except requests.RequestException:
-            pass
+        server_running = not self.is_port_available(host="0.0.0.0", port=port)
 
         # Start VILA server as a subprocess
         if not server_running:
@@ -59,12 +54,16 @@ class ModelAdapter(dl.BaseModelAdapter):
             ]
 
             self.vila_server_process = subprocess.Popen(
-                server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                server_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=True,
+                text=True,
             )
 
             # Wait for server to start
             logger.info(f"Starting VILA server with model: {model_path}")
-            self._wait_for_server_ready()
+            self._wait_for_server_ready(port=port)
 
     def call_model(self, messages):
         """Call the VILA model server with messages"""
@@ -105,31 +104,67 @@ class ModelAdapter(dl.BaseModelAdapter):
         prompt_item = dl.PromptItem.from_item(item)
         return prompt_item
 
-    def _wait_for_server_ready(self, timeout: int = 60, interval: float = 1.0):
-        """Poll the server root endpoint until it responds or the timeout is reached.
+    def _wait_for_server_ready(self, port: int = 8000):
+        """Wait for the VILA server process to start listening on the specified port."""
+        max_retries = 0
+        # Timeout logic replaced by fixed retries with long sleep
+        while (
+            max_retries < 20
+            and self.is_port_available(host="0.0.0.0", port=port) is True
+        ):
+            logger.info(
+                f"Waiting for inference server to start - attempt {max_retries + 1}/20. Sleeping for 5 minutes."
+            )
+            time.sleep(60 * 5)
+            max_retries += 1
+            logger.info(f"Checking server process logs:")
+            # Check stdout and stderr of the server process
+            if self.vila_server_process:
+                readable, _, _ = select.select(
+                    [self.vila_server_process.stdout, self.vila_server_process.stderr], [], [], 0.1
+                )
+                for f in readable:
+                    line = f.readline()
+                    if line:
+                        # Log output directly instead of printing
+                        logger.info(f"Server Output: {line.strip()}")
+            else:
+                logger.warning("Server process not available to read logs from.")
+
+        logger.info("Finished waiting attempts.")
+        if self.is_port_available(host="0.0.0.0", port=port) is True:
+             logger.error(f"Unable to start inference server on port {port} after {max_retries} attempts.")
+             # Optionally check process status
+             if self.vila_server_process:
+                 poll_status = self.vila_server_process.poll()
+                 if poll_status is not None:
+                     logger.error(f"Server process terminated unexpectedly with exit code: {poll_status}")
+                     stderr_output = self.vila_server_process.stderr.read()
+                     logger.error(f"Server stderr: {stderr_output}")
+
+             raise RuntimeError(f"Unable to start inference server on {self.vila_base_url} after multiple retries.")
+        else:
+             logger.info(f"VILA server is running and responsive on port {port}")
+
+    @staticmethod
+    def is_port_available(host, port):
+        """Checks if a port is available on a given host.
 
         Args:
-            timeout: Maximum amount of seconds to wait.
-            interval: Delay between consecutive probes in seconds.
+            host: The hostname or IP address of the host.
+            port: The port number to check.
 
-        Raises:
-            RuntimeError: If the server did not become responsive in the
-                allotted time.
+        Returns:
+            True if the port is available, False otherwise.
         """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                response = requests.get(self.vila_base_url, timeout=2)
-                if response.status_code < 500:
-                    logger.info("VILA server is running and responsive")
-                    return
-            except requests.RequestException:
-                # The server is not up yet
-                pass
 
-            time.sleep(interval)
-
-        raise RuntimeError(f"Timed out after {timeout}s while waiting for VILA server to start on {self.vila_base_url}")
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((host, port))
+            s.close()
+            return True
+        except OSError:
+            return False
 
     def _get_image_base64(self, image_path: str) -> str:
         """Read an image from *image_path* and return a base-64 encoded string."""
