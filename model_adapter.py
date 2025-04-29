@@ -15,9 +15,6 @@ logger = logging.getLogger("vila-adapter")
 class ModelAdapter(dl.BaseModelAdapter):
     def __init__(self, model_entity):
         super().__init__(model_entity)
-        self.vila_server_process = None
-        self.vila_base_url = None
-        self.client = None
 
     def load(self, local_path, **kwargs):
         """Load VILA model server and configuration"""
@@ -40,18 +37,7 @@ class ModelAdapter(dl.BaseModelAdapter):
 
         # Start VILA server as a subprocess
         if not server_running:
-            server_command = [
-                "/opt/conda/envs/vila_env/bin/python",
-                "-W",
-                "ignore",
-                "/tmp/app/VILA/custom_server.py",
-                "--model-path",
-                model_path,
-                "--conv-mode",
-                conv_mode,
-                "--port",
-                str(port),
-            ]
+            server_command = f"/opt/conda/envs/vila_env/bin/python -W ignore /tmp/app/VILA/custom_server.py --model-path {model_path} --conv-mode {conv_mode} --port {port}"
 
             self.vila_server_process = subprocess.Popen(
                 server_command,
@@ -72,10 +58,6 @@ class ModelAdapter(dl.BaseModelAdapter):
         temperature = self.configuration.get("temperature", 0.2)
         top_p = self.configuration.get("top_p", 0.9)
         model_name = self.configuration.get("model_path", "Efficient-Large-Model/NVILA-15B").split("/")[-1]
-        if not self.client:
-            self.client = OpenAI(
-                base_url=self.vila_base_url, api_key=self.configuration.get("openai_api_key", "fake-key")
-            )
 
         try:
             response = self.client.chat.completions.create(
@@ -115,7 +97,7 @@ class ModelAdapter(dl.BaseModelAdapter):
             logger.info(
                 f"Waiting for inference server to start - attempt {max_retries + 1}/20. Sleeping for 5 minutes."
             )
-            time.sleep(60 * 5)
+            time.sleep(15)
             max_retries += 1
             logger.info(f"Checking server process logs:")
             # Check stdout and stderr of the server process
