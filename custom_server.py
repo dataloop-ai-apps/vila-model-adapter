@@ -120,6 +120,8 @@ def load_video(video_url: str) -> str:
     # download or parse video from base64
     if video_url.startswith("http") or video_url.startswith("https"):
         response = requests.get(video_url)
+        if response.ok is False:
+            raise ValueError(f"Failed to download video from {video_url}: HTTP {response.status_code} - {response.reason}")
         video = BytesIO(response.content)
     else:
         match_results = VIDEO_CONTENT_BASE64_REGEX.match(video_url)
