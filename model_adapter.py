@@ -171,13 +171,11 @@ class ModelAdapter(dl.BaseModelAdapter):
         with open(image_path, "rb") as img_fd:
             return base64.b64encode(img_fd.read()).decode("utf-8")
 
-    def _process_text_for_videos(self, text_value: str) -> list:
+    def _process_text_for_videos(self, text_value: str, dataloop_video_pattern: re.Pattern) -> list:
         """Processes text to find video links (markdown & Dataloop raw), converts DL links to base64."""
         processed_content = []
         # Regex pattern to detect video markdown links – case insensitive.
         video_md_pattern = re.compile(r"\[video_url\]\(([^)]+)\)", re.IGNORECASE)
-        # Regex pattern to detect Dataloop video URLs
-        dataloop_video_pattern = re.compile(r"https?://gate\.dataloop\.ai/api/v1/items/([a-zA-Z0-9]+)(?:/stream)?")
 
         md_video_links = video_md_pattern.findall(text_value)
         clean_text = video_md_pattern.sub("", text_value).strip()
@@ -215,7 +213,7 @@ class ModelAdapter(dl.BaseModelAdapter):
         video_frames = self.configuration.get("video_frames", 8) # Note: video_frames currently unused here, handled by server
 
         # Regex pattern to detect Dataloop video URLs (used for explicit video_url content type)
-        dataloop_video_pattern = re.compile(r"https?://gate\.dataloop\.ai/api/v1/items/([a-zA-Z0-9]+)(?:/stream)?")
+        dataloop_video_pattern = re.compile(r"https?://(?:gate|rc-gate)\.dataloop\.ai/api/v1/items/([a-zA-Z0-9]+)(?:/stream)?")
 
         for prompt_item in batch:
             prompt_item: dl.PromptItem = prompt_item
@@ -229,13 +227,13 @@ class ModelAdapter(dl.BaseModelAdapter):
 
                 if isinstance(content, str):
                     # Process the text for video links using the helper function
-                    new_content_list.extend(self._process_text_for_videos(content))
+                    new_content_list.extend(self._process_text_for_videos(content, dataloop_video_pattern))
 
                 elif isinstance(content, list):
                     for element in content:
                         if element.get("type") == "text":
                             # Process the text element for video links using the helper
-                            new_content_list.extend(self._process_text_for_videos(element.get("text", ""))) 
+                            new_content_list.extend(self._process_text_for_videos(element.get("text", ""), dataloop_video_pattern))
 
                         elif element.get("type") == "video_url":
                             video_info = element.get("video_url", {})
