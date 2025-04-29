@@ -132,21 +132,6 @@ def _get_video_bytes_from_url(video_url: str) -> bytes:
         raise ValueError(f"Failed to download video from {video_url}: HTTP {response.status_code} - {response.reason}")
     return response.content
 
-# Helper function to get video bytes from a Dataloop URL
-def _get_video_bytes_from_dataloop(video_url: str) -> bytes:
-    try:
-        # Extract item ID from URL after "items/"
-        item_id = video_url.split("items/")[1].split("/")[0]
-        import dtlpy as dl # Import locally as it's specific to this function
-        item = dl.items.get(item_id=item_id)
-        if item.mimetype != "video/mp4":
-            raise ValueError(f"Video item type must be mp4, got {item.mimetype}")
-        binaries = item.download(save_locally=False)
-        return binaries.getvalue()
-    except Exception as e:
-        # Wrap the original exception for better debugging
-        raise ValueError(f"Error downloading video from dataloop: {str(e)}") from e
-
 # Helper function to get video bytes from a base64 data URI
 def _get_video_bytes_from_base64(video_data_uri: str) -> bytes:
     match_results = VIDEO_CONTENT_BASE64_REGEX.match(video_data_uri)
@@ -180,10 +165,7 @@ def load_video(video_url: str) -> str:
         if video_url.startswith("data:video/mp4;base64,"):
             video_bytes = _get_video_bytes_from_base64(video_url)
         elif video_url.startswith(("http://", "https://")):
-            if "gate.dataloop.ai/api/v1/items/" in video_url:
-                video_bytes = _get_video_bytes_from_dataloop(video_url)
-            else:
-                video_bytes = _get_video_bytes_from_url(video_url)
+            video_bytes = _get_video_bytes_from_url(video_url)
         else:
             raise ValueError(f"Unsupported video URL format: {video_url[:64]}")
 

@@ -148,10 +148,56 @@ class ModelAdapter(dl.BaseModelAdapter):
         except OSError:
             return False
 
+    def _get_video_base64_from_dataloop_url(self, video_url: str) -> str:
+        """Downloads a video from a Dataloop URL and returns it as a base64 data URI."""
+        try:
+            # Extract item ID from URL after "items/"
+            item_id = video_url.split("items/")[1].split("/")[0]
+            item = dl.items.get(item_id=item_id)
+            if not item.mimetype.startswith("video"): # Allow various video types initially
+                raise ValueError(f"Dataloop item must be a video, got {item.mimetype}")
+            binaries = item.download(save_locally=False)
+            video_bytes = binaries.getvalue()
+            # NOTE: Assuming mp4 for the data URI type, might need adjustment if other types are common
+            encoded_video = base64.b64encode(video_bytes).decode('utf-8')
+            return f"data:video/mp4;base64,{encoded_video}"
+        except Exception as e:
+            # Wrap the original exception for better debugging
+            logger.error(f"Error downloading video from dataloop ({video_url}): {str(e)}", exc_info=True)
+            raise ValueError(f"Error downloading video from dataloop: {str(e)}") from e
+
     def _get_image_base64(self, image_path: str) -> str:
         """Read an image from *image_path* and return a base-64 encoded string."""
         with open(image_path, "rb") as img_fd:
             return base64.b64encode(img_fd.read()).decode("utf-8")
+
+    def _process_text_for_videos(self, text_value: str) -> list:
+        """Processes text to find video links (markdown & Dataloop raw), converts DL links to base64."""
+        processed_content = []
+        # Regex pattern to detect video markdown links – case insensitive.
+        video_md_pattern = re.compile(r"\[video_url\]\(([^)]+)\)", re.IGNORECASE)
+        # Regex pattern to detect Dataloop video URLs
+        dataloop_video_pattern = re.compile(r"https?://gate\.dataloop\.ai/api/v1/items/([a-zA-Z0-9]+)(?:/stream)?")
+
+        md_video_links = video_md_pattern.findall(text_value)
+        clean_text = video_md_pattern.sub("", text_value).strip()
+
+        if clean_text:
+            processed_content.append({"type": "text", "text": clean_text})
+
+        # Add markdown video links
+        for link in md_video_links:
+            # Check if the markdown link is a Dataloop URL
+            if dataloop_video_pattern.match(link):
+                try:
+                    data_uri = self._get_video_base64_from_dataloop_url(link)
+                    processed_content.append({"type": "video_url", "video_url": {"url": data_uri}})
+                except Exception as e:
+                    logger.warning(f"Skipping Dataloop video link {link} due to error: {e}")
+            else:
+                processed_content.append({"type": "video_url", "video_url": {"url": link}})
+
+        return processed_content
 
     def predict(self, batch, **kwargs):
         """Run inference on a batch of *PromptItem*s using the local VILA server.
@@ -161,69 +207,62 @@ class ModelAdapter(dl.BaseModelAdapter):
         server (see ``server.py``). It supports plain text, images and videos
         (either provided as URLs or embedded via Markdown such as
         ``[video_url](https://example.com/video.mp4)``).
+
+        Dataloop video URLs are automatically converted to base64 data URIs.
         """
-        # NOTE: System prompt is not allowed by model
         add_metadata = self.configuration.get("add_metadata")
         model_name = self.model_entity.name
-        video_frames = self.configuration.get("video_frames", 8)
+        video_frames = self.configuration.get("video_frames", 8) # Note: video_frames currently unused here, handled by server
 
-        # Regex pattern to detect video markdown links – case insensitive.
-        video_md_pattern = re.compile(r"\[video_url\]\(([^)]+)\)", re.IGNORECASE)
+        # Regex pattern to detect Dataloop video URLs (used for explicit video_url content type)
+        dataloop_video_pattern = re.compile(r"https?://gate\.dataloop\.ai/api/v1/items/([a-zA-Z0-9]+)(?:/stream)?")
 
         for prompt_item in batch:
             prompt_item: dl.PromptItem = prompt_item
-            # Generate messages using prompt_item.to_messages
             messages = prompt_item.to_messages(model_name=model_name)
-            # Process messages to handle markdown video links within text
             processed_messages = []
+
             for message in messages:
                 role = message['role']
                 content = message['content']
                 new_content_list = []
 
-                # Content can be a string or a list of dicts
                 if isinstance(content, str):
-                    # Handle simple string content (same as before)
-                    text_value = content
-                    video_links = video_md_pattern.findall(text_value)
-                    clean_text = video_md_pattern.sub("", text_value).strip()
-                    if clean_text:
-                        new_content_list.append({"type": "text", "text": clean_text})
-                    for link in video_links:
-                        new_content_list.append(
-                            {
-                                "type": "video_url",
-                                "video_url": {"url": link},
-                            }
-                        )
+                    # Process the text for video links using the helper function
+                    new_content_list.extend(self._process_text_for_videos(content))
+
                 elif isinstance(content, list):
-                    # Handle list content (e.g., text and images)
                     for element in content:
                         if element.get("type") == "text":
-                            text_value = element.get("text", "")
-                            video_links = video_md_pattern.findall(text_value)
-                            clean_text = video_md_pattern.sub("", text_value).strip()
-                            if clean_text:
-                                new_content_list.append({"type": "text", "text": clean_text})
-                            for link in video_links:
-                                new_content_list.append(
-                                    {
-                                        "type": "video_url",
-                                        "video_url": {"url": link},
-                                    }
-                                )
+                            # Process the text element for video links using the helper
+                            new_content_list.extend(self._process_text_for_videos(element.get("text", ""))) 
+
+                        elif element.get("type") == "video_url":
+                            video_info = element.get("video_url", {})
+                            original_url = video_info.get("url")
+                            # Check if it's a Dataloop URL that needs conversion
+                            if original_url and dataloop_video_pattern.match(original_url):
+                                try:
+                                    data_uri = self._get_video_base64_from_dataloop_url(original_url)
+                                    new_video_info = video_info.copy()
+                                    new_video_info["url"] = data_uri
+                                    new_content_list.append({"type": "video_url", "video_url": new_video_info})
+                                except Exception as e:
+                                    logger.warning(f"Skipping Dataloop video URL {original_url} due to error: {e}")
+                            else:
+                                # Pass through non-Dataloop or already processed video URLs
+                                new_content_list.append(element)
                         else:
-                            # Pass through non-text elements (e.g., images) unchanged
+                            # Pass through other elements (e.g., images) unchanged
                             new_content_list.append(element)
                 else:
                      logger.warning(f"Unexpected content type in message: {type(content)}. Skipping.")
-                     continue # Skip this message or handle appropriately
+                     continue
 
-
-                # Reconstruct the message: if content became a list with only one text item, simplify back to string
+                # Reconstruct the message: simplify if only one text item resulted
                 if len(new_content_list) == 1 and new_content_list[0].get("type") == "text":
                     processed_messages.append({"role": role, "content": new_content_list[0]["text"]})
-                elif len(new_content_list) > 0 : # Use list for multiple parts or non-text parts
+                elif len(new_content_list) > 0:
                     processed_messages.append({"role": role, "content": new_content_list})
 
             # Optional retrieval-augmented context (applied after processing)
@@ -231,7 +270,6 @@ class ModelAdapter(dl.BaseModelAdapter):
             if nearest_items:
                 context = prompt_item.build_context(nearest_items=nearest_items, add_metadata=add_metadata)
                 logger.info(f"Nearest items Context: {context}")
-                # Append context as assistant message
                 processed_messages.append({"role": "assistant", "content": context})
 
             # Call model and stream/collect the response
