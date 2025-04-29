@@ -79,7 +79,7 @@ class ModelAdapter(dl.BaseModelAdapter):
 
         except Exception as e:
             logger.error(f"Error calling VILA model via OpenAI client: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     def prepare_item_func(self, item: dl.Item):
         """Prepare item for VILA model"""
