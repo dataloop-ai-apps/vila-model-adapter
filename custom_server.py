@@ -116,28 +116,88 @@ def sample_frames_from_video(video_path, num_frames=8):
     return sampled_frames_pil
 
 
-def load_video(video_url: str) -> str:
-    # download or parse video from base64
-    if video_url.startswith("http") or video_url.startswith("https"):
-        response = requests.get(video_url)
-        if response.ok is False:
-            raise ValueError(f"Failed to download video from {video_url}: HTTP {response.status_code} - {response.reason}")
-        video = BytesIO(response.content)
-    else:
-        match_results = VIDEO_CONTENT_BASE64_REGEX.match(video_url)
-        if match_results is None:
-            raise ValueError(f"Invalid video url: {video_url[:64]}")
-        image_base64 = match_results.groups()[1]
-        video = BytesIO(base64.b64decode(image_base64))
-    
+# Helper function to save video bytes to a temporary file
+def _save_bytes_to_temp_video_file(video_bytes: bytes, original_url: str) -> str:
     temp_dir = tempfile.mkdtemp()
-    # temp_dir = ".serving"
-    temp_fpath = os.path.join(temp_dir, f"{uuid.uuid5(uuid.NAMESPACE_DNS, video_url)}.mp4")
-    
+    # Using uuid5 based on the original URL for potential debugging/tracing
+    temp_fpath = os.path.join(temp_dir, f"{uuid.uuid5(uuid.NAMESPACE_DNS, original_url)}.mp4")
     with open(temp_fpath, "wb") as f:
-        f.write(video.getbuffer())
-        
+        f.write(video_bytes)
     return temp_fpath
+
+# Helper function to get video bytes from a regular URL
+def _get_video_bytes_from_url(video_url: str) -> bytes:
+    response = requests.get(video_url)
+    if not response.ok:
+        raise ValueError(f"Failed to download video from {video_url}: HTTP {response.status_code} - {response.reason}")
+    return response.content
+
+# Helper function to get video bytes from a Dataloop URL
+def _get_video_bytes_from_dataloop(video_url: str) -> bytes:
+    try:
+        # Extract item ID from URL after "items/"
+        item_id = video_url.split("items/")[1].split("/")[0]
+        import dtlpy as dl # Import locally as it's specific to this function
+        item = dl.items.get(item_id=item_id)
+        if item.mimetype != "video/mp4":
+            raise ValueError(f"Video item type must be mp4, got {item.mimetype}")
+        binaries = item.download(save_locally=False)
+        return binaries.getvalue()
+    except Exception as e:
+        # Wrap the original exception for better debugging
+        raise ValueError(f"Error downloading video from dataloop: {str(e)}") from e
+
+# Helper function to get video bytes from a base64 data URI
+def _get_video_bytes_from_base64(video_data_uri: str) -> bytes:
+    match_results = VIDEO_CONTENT_BASE64_REGEX.match(video_data_uri)
+    if match_results is None:
+        raise ValueError(f"Invalid video data URI format: {video_data_uri[:64]}")
+    # Extract the base64 part (second group)
+    video_base64 = match_results.groups()[1]
+    try:
+        return base64.b64decode(video_base64)
+    except base64.binascii.Error as e:
+        raise ValueError(f"Invalid base64 encoding in video data URI: {str(e)}") from e
+
+
+def load_video(video_url: str) -> str:
+    """
+    Loads video content from a URL or base64 data URI and saves it to a temporary file.
+
+    Args:
+        video_url: The URL (http/https) or base64 data URI (data:video/mp4;base64,...) of the video.
+                   Supports standard URLs and specific Dataloop AI platform URLs.
+
+    Returns:
+        The file path to the temporary video file.
+
+    Raises:
+        ValueError: If the URL format is unsupported, download fails, data is invalid,
+                    or the Dataloop item is not an mp4 video.
+    """
+    video_bytes = None
+    try:
+        if video_url.startswith("data:video/mp4;base64,"):
+            video_bytes = _get_video_bytes_from_base64(video_url)
+        elif video_url.startswith(("http://", "https://")):
+            if "gate.dataloop.ai/api/v1/items/" in video_url:
+                video_bytes = _get_video_bytes_from_dataloop(video_url)
+            else:
+                video_bytes = _get_video_bytes_from_url(video_url)
+        else:
+            raise ValueError(f"Unsupported video URL format: {video_url[:64]}")
+
+        # This check should ideally not be needed if the logic above is exhaustive,
+        # but serves as a safeguard.
+        if video_bytes is None:
+             raise ValueError(f"Could not retrieve video bytes for URL: {video_url[:64]}")
+
+        return _save_bytes_to_temp_video_file(video_bytes, video_url)
+
+    except (requests.exceptions.RequestException, ValueError) as e:
+        # Catch potential download errors or value errors from helpers and re-raise
+        # This simplifies the error handling for the caller.
+        raise ValueError(f"Failed to load video from {video_url[:64]}: {str(e)}") from e
 
 
 def load_image(image_url: str) -> PILImage:
