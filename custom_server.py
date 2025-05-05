@@ -98,6 +98,9 @@ def get_timestamp():
     return int(time.time())
 
 def sample_frames_from_video(video_path, num_frames=8):
+    # TODO: resize images to VGA resolution (i.e., make it smaller)
+    # TODO: add better subsampling logic with ResNet
+
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_indices = [int(total_frames / num_frames * i) for i in range(num_frames)]
