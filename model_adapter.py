@@ -13,9 +13,6 @@ logger = logging.getLogger("vila-adapter")
 
 
 class ModelAdapter(dl.BaseModelAdapter):
-    def __init__(self, model_entity):
-        super().__init__(model_entity)
-
     def load(self, local_path, **kwargs):
         """Load VILA model server and configuration"""
         self.adapter_defaults.upload_annotations = False
@@ -210,7 +207,6 @@ class ModelAdapter(dl.BaseModelAdapter):
         """
         add_metadata = self.configuration.get("add_metadata")
         model_name = self.model_entity.name
-        video_frames = self.configuration.get("video_frames", 8) # Note: video_frames currently unused here, handled by server
 
         for prompt_item in batch:
             prompt_item: dl.PromptItem = prompt_item
