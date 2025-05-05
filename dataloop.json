@@ -137,36 +137,6 @@
     ],
     "models": [
       {
-        "name": "nvila-15b",
-        "moduleName": "vila-model-adapter-module",
-        "scope": "project",
-        "status": "pre-trained",
-        "configuration": {
-          "model_path": "Efficient-Large-Model/NVILA-15B",
-          "conv_mode": "auto",
-          "max_tokens": 512,
-          "temperature": 0.2,
-          "top_p": 0.9,
-          "stream": false
-        },
-        "description": "NVILA-15B is a large, efficient vision language model designed for high-quality multimodal understanding, supporting both images and videos."
-      },
-      {
-        "name": "nvila-15b-lite",
-        "moduleName": "vila-model-adapter-module",
-        "scope": "project",
-        "status": "pre-trained",
-        "configuration": {
-          "model_path": "Efficient-Large-Model/NVILA-15B-Lite",
-          "conv_mode": "auto",
-          "max_tokens": 512,
-          "temperature": 0.2,
-          "top_p": 0.9,
-          "stream": false
-        },
-        "description": "NVILA-15B-Lite is an optimized version of NVILA-15B with better efficiency while maintaining high accuracy for multimodal understanding."
-      },
-      {
         "name": "nvila-8b",
         "moduleName": "vila-model-adapter-module",
         "scope": "project",
