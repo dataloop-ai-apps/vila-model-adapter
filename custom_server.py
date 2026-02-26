@@ -200,11 +200,10 @@ def load_image(image_url: str) -> PILImage:
 
 def get_literal_values(cls, field_name: str):
     field_type = cls.__annotations__.get(field_name)
-    if field_type is None:
-        raise ValueError(f"{field_name} is not a valid field name")
-    if hasattr(field_type, "__origin__") and field_type.__origin__ is Literal:
-        return get_args(field_type)
-    raise ValueError(f"{field_name} is not a Literal type")
+    is_literal = field_type is not None and getattr(field_type, "__origin__", None) is Literal
+    if not is_literal:
+        raise ValueError(f"Invalid Literal field: '{field_name}', got: {field_type}")
+    return get_args(field_type)
 
 
 # VILA_MODELS = get_literal_values(ChatCompletionRequest, "model")

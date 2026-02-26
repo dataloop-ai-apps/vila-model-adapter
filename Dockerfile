@@ -45,9 +45,7 @@ SHELL ["/bin/bash", "--login", "-c"]
 RUN python -m pip install --upgrade pip 
 
 # Install global dependencies
-RUN pip install \
-    dtlpy \
-    openai
+RUN pip install openai
 
 # Create Conda environment for VILA
 ENV CONDA_ENV_NAME vila_env
