@@ -1,19 +1,67 @@
 import base64
 import dtlpy as dl
 import logging
-import requests
-import time
-import subprocess
-from openai import OpenAI
-import socket
+import os
 import re
-import select
+import socket
+import subprocess
+import threading
+import time
+
+from openai import OpenAI
 
 logger = logging.getLogger("vila-adapter")
+
+GPU_LOG_INTERVAL = 5  # seconds between GPU memory logs
+
+
+def _stream_output(pipe, log_level=logging.INFO, prefix=""):
+    """Stream subprocess output to logger."""
+    try:
+        for line in iter(pipe.readline, ""):
+            if line:
+                msg = line.rstrip('\n\r')
+                if prefix:
+                    msg = f"{prefix}{msg}"
+                logger.log(log_level, msg)
+    finally:
+        pipe.close()
+
+
+def _get_gpu_memory():
+    """Get GPU memory stats using nvidia-smi.
+
+    Returns:
+        Tuple of (free, total, used) lists in MB, or None if nvidia-smi fails.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=False
+        )
+        free = [int(x.strip()) for x in result.stdout.strip().split('\n') if x.strip()]
+
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=False
+        )
+        total = [int(x.strip()) for x in result.stdout.strip().split('\n') if x.strip()]
+
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=False
+        )
+        used = [int(x.strip()) for x in result.stdout.strip().split('\n') if x.strip()]
+
+        return free, total, used
+    except (subprocess.SubprocessError, ValueError, OSError) as exc:
+        logger.warning(f"Failed to query GPU memory via nvidia-smi: {exc}")
+        return None
 
 
 class ModelAdapter(dl.BaseModelAdapter):
     def load(self, local_path, **kwargs):
+        logger.info(f"-HHH- Loading VILA model server and configuration 0.7")
         """Load VILA model server and configuration"""
         self.adapter_defaults.upload_annotations = False
 
@@ -34,15 +82,38 @@ class ModelAdapter(dl.BaseModelAdapter):
 
         # Start VILA server as a subprocess
         if not server_running:
-            server_command = f"/opt/conda/envs/vila_env/bin/python -W ignore custom_server.py --model-path {model_path} --conv-mode {conv_mode} --port {port}"
-
+            adapter_dir = os.path.dirname(os.path.abspath(__file__))
+            server_script = os.path.join(adapter_dir, "custom_server.py")
+            # INSERT_YOUR_CODE
+            if not os.path.exists("/opt/conda/envs/vila_env/bin/python"):
+                logger.warning("VILA Python executable not found at /opt/conda/envs/vila_env/bin/python. Please check your environment setup.")
+            server_command = f"/opt/conda/envs/vila_env/bin/python -u -W ignore {server_script} --model-path {model_path} --conv-mode {conv_mode} --port {port}"
+            logger.info(f"Server command: {server_command}")
+            logger.info(f"Starting VILA server with model: {model_path} (cwd={adapter_dir})")
             self.vila_server_process = subprocess.Popen(
                 server_command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=True,
                 text=True,
+                bufsize=1,
+                cwd=adapter_dir,
             )
+
+            # Stream stdout and stderr to logger in background threads
+            threading.Thread(
+                target=_stream_output,
+                args=(self.vila_server_process.stdout, logging.INFO),
+                daemon=True,
+            ).start()
+            threading.Thread(
+                target=_stream_output,
+                args=(self.vila_server_process.stderr, logging.WARNING, "[stderr] "),
+                daemon=True,
+            ).start()
+
+            # Periodic GPU memory monitoring
+            threading.Thread(target=self._monitor_gpu, daemon=True).start()
 
             # Wait for server to start
             logger.info(f"Starting VILA server with model: {model_path}")
@@ -84,46 +155,45 @@ class ModelAdapter(dl.BaseModelAdapter):
         return prompt_item
 
     def _wait_for_server_ready(self, port: int = 8000):
-        """Wait for the VILA server process to start listening on the specified port."""
-        max_retries = 0
-        # Timeout logic replaced by fixed retries with long sleep
-        while (
-            max_retries < 20
-            and self.is_port_available(host="0.0.0.0", port=port) is True
-        ):
+        """Wait indefinitely for the VILA server to start listening on *port*.
+
+        The method blocks until the port is occupied (i.e. the server is
+        accepting connections).  If the server process exits before that, a
+        ``RuntimeError`` is raised immediately.
+        """
+        attempt = 0
+        while self.is_port_available(host="0.0.0.0", port=port):
+            attempt += 1
             logger.info(
-                f"Waiting for inference server to start - attempt {max_retries + 1}/20. Sleeping for 5 minutes."
+                f"Waiting for inference server to start – attempt {attempt}. "
+                f"Sleeping 15 s..."
             )
             time.sleep(15)
-            max_retries += 1
-            logger.info(f"Checking server process logs:")
-            # Check stdout and stderr of the server process
-            if self.vila_server_process:
-                readable, _, _ = select.select(
-                    [self.vila_server_process.stdout, self.vila_server_process.stderr], [], [], 0.1
+
+            if self.vila_server_process and self.vila_server_process.poll() is not None:
+                logger.error(
+                    f"Server process terminated unexpectedly with exit code: "
+                    f"{self.vila_server_process.returncode}"
                 )
-                for f in readable:
-                    line = f.readline()
-                    if line:
-                        # Log output directly instead of printing
-                        logger.info(f"Server Output: {line.strip()}")
-            else:
-                logger.warning("Server process not available to read logs from.")
+                raise RuntimeError(
+                    f"Unable to start inference server on {self.vila_base_url} – "
+                    f"process exited with code {self.vila_server_process.returncode}"
+                )
 
-        logger.info("Finished waiting attempts.")
-        if self.is_port_available(host="0.0.0.0", port=port) is True:
-             logger.error(f"Unable to start inference server on port {port} after {max_retries} attempts.")
-             # Optionally check process status
-             if self.vila_server_process:
-                 poll_status = self.vila_server_process.poll()
-                 if poll_status is not None:
-                     logger.error(f"Server process terminated unexpectedly with exit code: {poll_status}")
-                     stderr_output = self.vila_server_process.stderr.read()
-                     logger.error(f"Server stderr: {stderr_output}")
+        logger.info(f"VILA server is running and responsive on port {port}")
 
-             raise RuntimeError(f"Unable to start inference server on {self.vila_base_url} after multiple retries.")
-        else:
-             logger.info(f"VILA server is running and responsive on port {port}")
+    def _monitor_gpu(self):
+        """Log GPU memory usage periodically."""
+        logger.info("GPU monitor thread started")
+        while True:
+            try:
+                stats = _get_gpu_memory()
+                if stats:
+                    free, total, used = stats
+                    logger.info(f"GPU memory - total: {total} MB, used: {used} MB, free: {free} MB")
+            except Exception:
+                logger.exception("Unexpected error in GPU monitor thread")
+            time.sleep(GPU_LOG_INTERVAL)
 
     @staticmethod
     def is_port_available(host, port):

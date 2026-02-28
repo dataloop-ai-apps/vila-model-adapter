@@ -4,12 +4,17 @@ import base64
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from io import BytesIO
 from threading import Thread
 from typing import List, Literal, Optional, Union, get_args
+
+# Debug prefix for easy log search – print immediately so we see output before any later import fails
+DEBUG_PREFIX = "-CUSOTM-SERVER----"
+print(f"{DEBUG_PREFIX} custom_server.py script started (stdlib imports done)", flush=True)
 
 import requests
 import torch
@@ -34,6 +39,8 @@ import asyncio
 import cv2
 from anyio.lowlevel import RunVar
 from anyio import CapacityLimiter
+
+print(f"{DEBUG_PREFIX} custom_server.py imports done (module loaded)", flush=True)
 
 class TextContent(BaseModel):
     type: Literal["text"]
@@ -211,19 +218,27 @@ def get_literal_values(cls, field_name: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model, model_name, tokenizer, image_processor, context_len
+    print(f"{DEBUG_PREFIX} lifespan started")
+    print(f"{DEBUG_PREFIX} calling disable_torch_init()")
     disable_torch_init()
+    print(f"{DEBUG_PREFIX} disable_torch_init() done")
     model_path = app.args.model_path
+    print(f"{DEBUG_PREFIX} model_path={model_path}")
     model_name = get_model_name_from_path(model_path)
+    print(f"{DEBUG_PREFIX} model_name={model_name}, loading model via llava.load()")
     # tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, model_name, None)
     model = llava.load(model_path)
+    print(f"{DEBUG_PREFIX} llava.load() returned")
     # model = None
     print(f"{model_name=} {model_path=} loaded successfully. Context length: {context_len}")
     print("start & set capacity limiter to 1")
     RunVar("_default_thread_limiter").set(CapacityLimiter(1))
     global globallock
     globallock = asyncio.Lock()
+    print(f"{DEBUG_PREFIX} lifespan ready, yielding to app")
     yield
-    scheduler.shutdown()  # Ensure the scheduler stops when the app shuts down
+    print(f"{DEBUG_PREFIX} lifespan shutdown started")
+    print(f"{DEBUG_PREFIX} lifespan shutdown done")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -242,12 +257,14 @@ class MyStreamingResponse(StreamingResponse):
 
 @app.get("/")
 async def read_root():
+    print(f"{DEBUG_PREFIX} GET / received")
     return {"message": "Welcome to the VILA API. This is for internal use only. Please use /chat/completions for chat completions."}
 
         
 @app.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     # print("DEBUG0")
+    print(f"{DEBUG_PREFIX} POST /chat/completions received, model={request.model}, stream={request.stream}")
     current_time = time.strftime("%H:%M:%S-%s", time.localtime())
     current_time_hash = uuid.uuid5(uuid.NAMESPACE_DNS, current_time)
     obj_hash = uuid.uuid5(uuid.NAMESPACE_DNS, str(request.dict()))
@@ -255,7 +272,9 @@ async def chat_completions(request: ChatCompletionRequest):
     try:
         global model, tokenizer, image_processor, context_len
 
+        print(f"{DEBUG_PREFIX} checking request.model vs model_name")
         if request.model != model_name:
+            print(f"{DEBUG_PREFIX} model mismatch: request.model={request.model}, model_name={model_name}")
             raise ValueError(
                 f"The endpoint is configured to use the model {model_name}, "
                 f"but the request model is {request.model}"
@@ -270,7 +289,8 @@ async def chat_completions(request: ChatCompletionRequest):
         messages = request.messages
         conv_mode = app.args.conv_mode
         conv = conv_templates[conv_mode].copy()
-        
+        print(f"{DEBUG_PREFIX} building prompt, messages count={len(messages)}, conv_mode={conv_mode}")
+
         ########################################################################### 
         prompt = []
         for message in messages:
@@ -294,12 +314,16 @@ async def chat_completions(request: ChatCompletionRequest):
                     else:
                         raise NotImplementedError(f"Unsupported content type: {content.type}")
         
+        print(f"{DEBUG_PREFIX} prompt built, entering inference (stream={request.stream})")
         with torch.inference_mode():
             if request.stream:
+                print(f"{DEBUG_PREFIX} acquiring globallock for stream")
                 await globallock.acquire()
+                print(f"{DEBUG_PREFIX} calling model.generate_content(stream=True)")
                 streamer = model.generate_content(prompt, stream=True)
                 # streamer = "helloworld!" 
                 def chunk_generator():
+                    print(f"{DEBUG_PREFIX} stream chunk_generator started")
                     for chunk_id, new_text in enumerate(streamer):
                         if len(new_text):
                             chunk = {
@@ -324,8 +348,11 @@ async def chat_completions(request: ChatCompletionRequest):
                         globallock.release()
                 return MyStreamingResponse(chunk_generator_wrapper())
             else:
+                print(f"{DEBUG_PREFIX} acquiring globallock for non-stream")
                 await globallock.acquire()
+                print(f"{DEBUG_PREFIX} calling model.generate_content(stream=False)")
                 outputs = model.generate_content(prompt)
+                print(f"{DEBUG_PREFIX} model.generate_content() returned")
                 # outputs = "helloworld!" 
                 if globallock.locked():
                     globallock.release()
@@ -342,6 +369,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     ],
                 }
     except Exception as e:
+        print(f"{DEBUG_PREFIX} chat_completions exception: {type(e).__name__}: {e}")
         if globallock.locked():
             globallock.release()
             
@@ -353,12 +381,14 @@ async def chat_completions(request: ChatCompletionRequest):
         pass
     
 if __name__ == "__main__":
+    print(f"{DEBUG_PREFIX} __main__ started")
     global host, port
     host = os.getenv("VILA_HOST", "0.0.0.0")
     port = os.getenv("VILA_PORT", 8000)
     model_path = os.getenv("VILA_MODEL_PATH", "Efficient-Large-Model/NVILA-8B")
     conv_mode = os.getenv("VILA_CONV_MODE", "auto")
     workers = os.getenv("VILA_WORKERS", 1)
+    print(f"{DEBUG_PREFIX} env: VILA_HOST={host}, VILA_PORT={port}, VILA_MODEL_PATH={model_path}, VILA_CONV_MODE={conv_mode}")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default=host)
@@ -367,11 +397,13 @@ if __name__ == "__main__":
     parser.add_argument("--conv-mode", type=str, default=conv_mode)
     # parser.add_argument("--workers", type=int, default=1)
     app.args = parser.parse_args()
+    print(f"{DEBUG_PREFIX} parsed args: host={app.args.host}, port={app.args.port}, model_path={app.args.model_path}, conv_mode={app.args.conv_mode}")
     port = int(app.args.port)
+    print(f"{DEBUG_PREFIX} starting uvicorn on {app.args.host}:{app.args.port}")
     uvicorn.run(app, 
         host = app.args.host, 
         port = app.args.port, 
         workers = 1,
         timeout_keep_alive = 60,
     )
-    # python server.py --port 8000 --model-path Efficient-Large-Model/NVILA-8B --conv-mode auto
+    print(f"{DEBUG_PREFIX} uvicorn.run() returned (server stopped)")
