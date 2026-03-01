@@ -356,3 +356,9 @@ class ModelAdapter(dl.BaseModelAdapter):
                 )
         # Return an empty list to conform to the Dataloop SDK expectations
         return []
+
+if __name__ == '__main__':
+    model = dl.models.get(model_id="69a09b34375acb7b9fb1ebfa")
+    item= dl.items.get(item_id="69a0154366e31d62385299c0")
+    adapter = ModelAdapter(model_entity=model)
+    adapter.predict_items(items=[item])

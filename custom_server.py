@@ -226,8 +226,34 @@ async def lifespan(app: FastAPI):
     print(f"{DEBUG_PREFIX} model_path={model_path}")
     model_name = get_model_name_from_path(model_path)
     print(f"{DEBUG_PREFIX} model_name={model_name}, loading model via llava.load()")
+
+    import transformers
+
+    # Monkey-patch resize_token_embeddings to avoid a 2 GiB float32 temp allocation
+    # that causes CUDA OOM. mean_resizing=True (the default) computes mean/covariance
+    # of existing embeddings in float32; we don't need that for inference.
+    _orig_resize = transformers.PreTrainedModel.resize_token_embeddings
+    def _resize_no_mean(self, new_num_tokens=None, pad_to_multiple_of=None, mean_resizing=False):
+        return _orig_resize(self, new_num_tokens, pad_to_multiple_of, mean_resizing=mean_resizing)
+    transformers.PreTrainedModel.resize_token_embeddings = _resize_no_mean
+
+    # Force all from_pretrained calls to use eager attention instead of flash_attention_2.
+    # The SigLIP vision encoder hardcodes attn_implementation="flash_attention_2",
+    # which crashes on pre-Ampere GPUs.
+    _orig_from_pretrained = transformers.PreTrainedModel.from_pretrained.__func__
+    @classmethod
+    def _eager_from_pretrained(cls, *args, **kwargs):
+        kwargs["attn_implementation"] = "eager"
+        return _orig_from_pretrained(cls, *args, **kwargs)
+    transformers.PreTrainedModel.from_pretrained = _eager_from_pretrained
+
     # tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, model_name, None)
-    model = llava.load(model_path)
+    model = llava.load(
+        model_path,
+        attn_implementation="eager",
+        load_4bit=True,
+        torch_dtype=torch.float16,
+    )
     print(f"{DEBUG_PREFIX} llava.load() returned")
     # model = None
     print(f"{model_name=} {model_path=} loaded successfully. Context length: {context_len}")

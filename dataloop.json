@@ -1,6 +1,6 @@
 {
   "name": "vila-model-adapter-husam",
-  "version": "0.0.7",
+  "version": "0.0.10",
   "attributes": {
     "Provider": "NVIDIA",
     "Category": "Model",
@@ -147,7 +147,7 @@
         "description": "NVILA-8B is a medium-sized, efficient vision language model designed for multimodal understanding, offering a good balance between performance and efficiency."
       },
       {
-        "name": "nvila-8b-lite",
+        "name": "nvila-lite-8b",
         "moduleName": "vila-model-adapter-module",
         "scope": "project",
         "status": "pre-trained",
@@ -159,7 +159,7 @@
           "top_p": 0.9,
           "stream": false
         },
-        "description": "NVILA-8B-Lite is an optimized version of NVILA-8B, designed for efficient deployment while maintaining good performance for multimodal tasks."
+        "description": "NVILA-Lite-8B is an optimized version of NVILA-8B, designed for efficient deployment while maintaining good performance for multimodal tasks."
       },
       {
         "name": "vila-1.5-3b",
