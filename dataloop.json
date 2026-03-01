@@ -27,7 +27,7 @@
       {
         "name": "vila-model-adapter-deploy",
         "runtime": {
-          "podType": "gpu-a100-s",
+          "podType": "gpu-t4-m",
           "concurrency": 1,
           "runnerImage": "gcr.io/viewo-g/piper/agent/runner/gpu/vila-model-adapter:0.10.0",
           "autoscaler": {
