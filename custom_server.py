@@ -244,6 +244,9 @@ async def lifespan(app: FastAPI):
     @classmethod
     def _eager_from_pretrained(cls, *args, **kwargs):
         kwargs["attn_implementation"] = "eager"
+        if "quantization_config" in kwargs:
+            kwargs.pop("load_in_4bit", None)
+            kwargs.pop("load_in_8bit", None)
         return _orig_from_pretrained(cls, *args, **kwargs)
     transformers.PreTrainedModel.from_pretrained = _eager_from_pretrained
 

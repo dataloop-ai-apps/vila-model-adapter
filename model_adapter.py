@@ -136,14 +136,21 @@ class ModelAdapter(dl.BaseModelAdapter):
                 stream=stream,
                 model=model_name,
             )
-
+            logger.info(f"Response finish reason: {response.choices[0].finish_reason}")
+            if response.usage is None:
+                logger.warning("Response usage is None")
+            else:
+                logger.info(f"Response prompt tokens: {response.usage.prompt_tokens}")
+                logger.info(f"Response completion tokens: {response.usage.completion_tokens}")
             if stream:
                 for chunk in response:
-                    # When streaming, the client returns `ChatCompletionChunk` objects
-                    yield chunk.choices[0].delta.content or ""
+                    content = chunk.choices[0].delta.content or ""
+                    logger.info(f"[stream chunk] {content}")
+                    yield content
             else:
-                # Non‑streaming – a single response object is returned
-                yield response.choices[0].message.content or ""
+                content = response.choices[0].message.content or ""
+                logger.info(f"[model response] {content}")
+                yield content
 
         except Exception as e:
             logger.error(f"Error calling VILA model via OpenAI client: {e}")
@@ -359,6 +366,8 @@ class ModelAdapter(dl.BaseModelAdapter):
 
 if __name__ == '__main__':
     model = dl.models.get(model_id="69a09b34375acb7b9fb1ebfa")
-    item= dl.items.get(item_id="69a0154366e31d62385299c0")
+    model.configuration['model_path'] = "Efficient-Large-Model/VILA1.5-3b"
+    model.update()
+    item= dl.items.get(item_id="69a42e3ee8f53bd2d789520e")
     adapter = ModelAdapter(model_entity=model)
     adapter.predict_items(items=[item])
