@@ -4,17 +4,12 @@ import base64
 import json
 import os
 import re
-import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from io import BytesIO
 from threading import Thread
 from typing import List, Literal, Optional, Union, get_args
-
-# Debug prefix for easy log search – print immediately so we see output before any later import fails
-DEBUG_PREFIX = "-CUSOTM-SERVER----"
-print(f"{DEBUG_PREFIX} custom_server.py script started (stdlib imports done)", flush=True)
 
 import requests
 import torch
@@ -24,6 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image as PILImage
 # from PIL.Image import Image
 from pydantic import BaseModel
+import transformers
 from transformers.generation.streamers import TextIteratorStreamer
 
 import tempfile
@@ -40,7 +36,34 @@ import cv2
 from anyio.lowlevel import RunVar
 from anyio import CapacityLimiter
 
-print(f"{DEBUG_PREFIX} custom_server.py imports done (module loaded)", flush=True)
+# Monkey-patch resize_token_embeddings to disable mean_resizing (default True).
+# When mean_resizing=True, HF computes the mean/covariance of existing embeddings
+# in float32 to initialize new tokens. For large vocab models this creates a ~2 GiB
+# temporary float32 tensor that causes CUDA OOM on memory-constrained GPUs (e.g. T4
+# with 16 GB VRAM). Since we only run inference and never add new tokens, we can
+# safely default mean_resizing=False to skip that allocation entirely.
+_orig_resize = transformers.PreTrainedModel.resize_token_embeddings
+
+def _resize_no_mean(self, new_num_tokens=None, pad_to_multiple_of=None, mean_resizing=False):
+    return _orig_resize(self, new_num_tokens, pad_to_multiple_of, mean_resizing=mean_resizing)
+
+# Monkey-patch from_pretrained to force attn_implementation="eager".
+# The SigLIP vision encoder inside VILA/NVILA hardcodes
+# attn_implementation="flash_attention_2", but Flash Attention 2 requires Ampere
+# (SM 80+) or newer GPUs. On pre-Ampere hardware like T4 (SM 75) this crashes at
+# runtime. Forcing "eager" (standard PyTorch SDPA) works on all GPU architectures.
+# We also strip load_in_4bit / load_in_8bit when quantization_config is already
+# present to avoid duplicate-quantization argument errors.
+_orig_from_pretrained = transformers.PreTrainedModel.from_pretrained.__func__
+
+@classmethod
+def _eager_from_pretrained(cls, *args, **kwargs):
+    kwargs["attn_implementation"] = "eager"
+    if "quantization_config" in kwargs:
+        kwargs.pop("load_in_4bit", None)
+        kwargs.pop("load_in_8bit", None)
+    return _orig_from_pretrained(cls, *args, **kwargs)
+
 
 class TextContent(BaseModel):
     type: Literal["text"]
@@ -218,36 +241,11 @@ def get_literal_values(cls, field_name: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model, model_name, tokenizer, image_processor, context_len
-    print(f"{DEBUG_PREFIX} lifespan started")
-    print(f"{DEBUG_PREFIX} calling disable_torch_init()")
     disable_torch_init()
-    print(f"{DEBUG_PREFIX} disable_torch_init() done")
     model_path = app.args.model_path
-    print(f"{DEBUG_PREFIX} model_path={model_path}")
     model_name = get_model_name_from_path(model_path)
-    print(f"{DEBUG_PREFIX} model_name={model_name}, loading model via llava.load()")
 
-    import transformers
-
-    # Monkey-patch resize_token_embeddings to avoid a 2 GiB float32 temp allocation
-    # that causes CUDA OOM. mean_resizing=True (the default) computes mean/covariance
-    # of existing embeddings in float32; we don't need that for inference.
-    _orig_resize = transformers.PreTrainedModel.resize_token_embeddings
-    def _resize_no_mean(self, new_num_tokens=None, pad_to_multiple_of=None, mean_resizing=False):
-        return _orig_resize(self, new_num_tokens, pad_to_multiple_of, mean_resizing=mean_resizing)
     transformers.PreTrainedModel.resize_token_embeddings = _resize_no_mean
-
-    # Force all from_pretrained calls to use eager attention instead of flash_attention_2.
-    # The SigLIP vision encoder hardcodes attn_implementation="flash_attention_2",
-    # which crashes on pre-Ampere GPUs.
-    _orig_from_pretrained = transformers.PreTrainedModel.from_pretrained.__func__
-    @classmethod
-    def _eager_from_pretrained(cls, *args, **kwargs):
-        kwargs["attn_implementation"] = "eager"
-        if "quantization_config" in kwargs:
-            kwargs.pop("load_in_4bit", None)
-            kwargs.pop("load_in_8bit", None)
-        return _orig_from_pretrained(cls, *args, **kwargs)
     transformers.PreTrainedModel.from_pretrained = _eager_from_pretrained
 
     # tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, model_name, None)
@@ -257,17 +255,13 @@ async def lifespan(app: FastAPI):
         load_4bit=True,
         torch_dtype=torch.float16,
     )
-    print(f"{DEBUG_PREFIX} llava.load() returned")
     # model = None
     print(f"{model_name=} {model_path=} loaded successfully. Context length: {context_len}")
     print("start & set capacity limiter to 1")
     RunVar("_default_thread_limiter").set(CapacityLimiter(1))
     global globallock
     globallock = asyncio.Lock()
-    print(f"{DEBUG_PREFIX} lifespan ready, yielding to app")
     yield
-    print(f"{DEBUG_PREFIX} lifespan shutdown started")
-    print(f"{DEBUG_PREFIX} lifespan shutdown done")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -280,20 +274,16 @@ class MyStreamingResponse(StreamingResponse):
             message = await receive()
             if message["type"] == "http.disconnect":
                 if globallock.locked():
-                    print("DEBUG5: release lock for disconnected http client")
                     globallock.release()
                 break
 
 @app.get("/")
 async def read_root():
-    print(f"{DEBUG_PREFIX} GET / received")
     return {"message": "Welcome to the VILA API. This is for internal use only. Please use /chat/completions for chat completions."}
 
         
 @app.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
-    # print("DEBUG0")
-    print(f"{DEBUG_PREFIX} POST /chat/completions received, model={request.model}, stream={request.stream}")
     current_time = time.strftime("%H:%M:%S-%s", time.localtime())
     current_time_hash = uuid.uuid5(uuid.NAMESPACE_DNS, current_time)
     obj_hash = uuid.uuid5(uuid.NAMESPACE_DNS, str(request.dict()))
@@ -301,9 +291,7 @@ async def chat_completions(request: ChatCompletionRequest):
     try:
         global model, tokenizer, image_processor, context_len
 
-        print(f"{DEBUG_PREFIX} checking request.model vs model_name")
         if request.model != model_name:
-            print(f"{DEBUG_PREFIX} model mismatch: request.model={request.model}, model_name={model_name}")
             raise ValueError(
                 f"The endpoint is configured to use the model {model_name}, "
                 f"but the request model is {request.model}"
@@ -318,7 +306,6 @@ async def chat_completions(request: ChatCompletionRequest):
         messages = request.messages
         conv_mode = app.args.conv_mode
         conv = conv_templates[conv_mode].copy()
-        print(f"{DEBUG_PREFIX} building prompt, messages count={len(messages)}, conv_mode={conv_mode}")
 
         ########################################################################### 
         prompt = []
@@ -343,16 +330,12 @@ async def chat_completions(request: ChatCompletionRequest):
                     else:
                         raise NotImplementedError(f"Unsupported content type: {content.type}")
         
-        print(f"{DEBUG_PREFIX} prompt built, entering inference (stream={request.stream})")
         with torch.inference_mode():
             if request.stream:
-                print(f"{DEBUG_PREFIX} acquiring globallock for stream")
                 await globallock.acquire()
-                print(f"{DEBUG_PREFIX} calling model.generate_content(stream=True)")
                 streamer = model.generate_content(prompt, stream=True)
                 # streamer = "helloworld!" 
                 def chunk_generator():
-                    print(f"{DEBUG_PREFIX} stream chunk_generator started")
                     for chunk_id, new_text in enumerate(streamer):
                         if len(new_text):
                             chunk = {
@@ -377,11 +360,8 @@ async def chat_completions(request: ChatCompletionRequest):
                         globallock.release()
                 return MyStreamingResponse(chunk_generator_wrapper())
             else:
-                print(f"{DEBUG_PREFIX} acquiring globallock for non-stream")
                 await globallock.acquire()
-                print(f"{DEBUG_PREFIX} calling model.generate_content(stream=False)")
                 outputs = model.generate_content(prompt)
-                print(f"{DEBUG_PREFIX} model.generate_content() returned")
                 # outputs = "helloworld!" 
                 if globallock.locked():
                     globallock.release()
@@ -398,7 +378,6 @@ async def chat_completions(request: ChatCompletionRequest):
                     ],
                 }
     except Exception as e:
-        print(f"{DEBUG_PREFIX} chat_completions exception: {type(e).__name__}: {e}")
         if globallock.locked():
             globallock.release()
             
@@ -410,14 +389,12 @@ async def chat_completions(request: ChatCompletionRequest):
         pass
     
 if __name__ == "__main__":
-    print(f"{DEBUG_PREFIX} __main__ started")
     global host, port
     host = os.getenv("VILA_HOST", "0.0.0.0")
     port = os.getenv("VILA_PORT", 8000)
     model_path = os.getenv("VILA_MODEL_PATH", "Efficient-Large-Model/NVILA-8B")
     conv_mode = os.getenv("VILA_CONV_MODE", "auto")
     workers = os.getenv("VILA_WORKERS", 1)
-    print(f"{DEBUG_PREFIX} env: VILA_HOST={host}, VILA_PORT={port}, VILA_MODEL_PATH={model_path}, VILA_CONV_MODE={conv_mode}")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default=host)
@@ -426,13 +403,10 @@ if __name__ == "__main__":
     parser.add_argument("--conv-mode", type=str, default=conv_mode)
     # parser.add_argument("--workers", type=int, default=1)
     app.args = parser.parse_args()
-    print(f"{DEBUG_PREFIX} parsed args: host={app.args.host}, port={app.args.port}, model_path={app.args.model_path}, conv_mode={app.args.conv_mode}")
     port = int(app.args.port)
-    print(f"{DEBUG_PREFIX} starting uvicorn on {app.args.host}:{app.args.port}")
     uvicorn.run(app, 
         host = app.args.host, 
         port = app.args.port, 
         workers = 1,
         timeout_keep_alive = 60,
     )
-    print(f"{DEBUG_PREFIX} uvicorn.run() returned (server stopped)")

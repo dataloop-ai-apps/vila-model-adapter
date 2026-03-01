@@ -61,7 +61,7 @@ def _get_gpu_memory():
 
 class ModelAdapter(dl.BaseModelAdapter):
     def load(self, local_path, **kwargs):
-        logger.info(f"-HHH- Loading VILA model server and configuration 0.7")
+        logger.info(f"Loading VILA model server")
         """Load VILA model server and configuration"""
         self.adapter_defaults.upload_annotations = False
 
@@ -84,7 +84,6 @@ class ModelAdapter(dl.BaseModelAdapter):
         if not server_running:
             adapter_dir = os.path.dirname(os.path.abspath(__file__))
             server_script = os.path.join(adapter_dir, "custom_server.py")
-            # INSERT_YOUR_CODE
             if not os.path.exists("/opt/conda/envs/vila_env/bin/python"):
                 logger.warning("VILA Python executable not found at /opt/conda/envs/vila_env/bin/python. Please check your environment setup.")
             server_command = f"/opt/conda/envs/vila_env/bin/python -u -W ignore {server_script} --model-path {model_path} --conv-mode {conv_mode} --port {port}"
