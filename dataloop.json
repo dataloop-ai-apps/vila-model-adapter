@@ -1,0 +1,186 @@
+{
+  "name": "vila-model-adapter",
+  "version": "0.0.4",
+  "attributes": {
+    "Provider": "NVIDIA",
+    "Category": "Model",
+    "NLP": "Conversational",
+    "Gen AI": "LMM",
+    "Media Type": [
+      "Text",
+      "Image",
+      "Video"
+    ],
+    "License": "Apache 2.0",
+    "Deployed By": "Dataloop"
+  },
+  "displayName": "VILA Model Adapter",
+  "description": "VILA Vision Language Model adapter for multimodal (text, image, video) processing by NVlabs (NVIDIA). VILA is a family of efficient vision language models designed for multi-image and video understanding.",
+  "scope": "public",
+  "codebase": {
+    "type": "git",
+    "gitUrl": "https://github.com/dataloop-ai-apps/vila-model-adapter.git",
+    "gitTag": "0.0.4"
+  },
+  "components": {
+    "computeConfigs": [
+      {
+        "name": "vila-model-adapter-deploy",
+        "runtime": {
+          "podType": "gpu-t4-m",
+          "concurrency": 1,
+          "runnerImage": "gcr.io/viewo-g/piper/agent/runner/gpu/vila-model-adapter:0.10.0",
+          "autoscaler": {
+            "minReplicas": 0,
+            "maxReplicas": 2,
+            "queueLength": 100
+          }
+        }
+      }
+    ],
+    "modules": [
+      {
+        "name": "vila-model-adapter-module",
+        "entryPoint": "model_adapter.py",
+        "className": "ModelAdapter",
+        "computeConfig": "vila-model-adapter-deploy",
+        "description": "VILA Model Adapter Module",
+        "initInputs": [
+          {
+            "type": "Model",
+            "name": "model_entity"
+          }
+        ],
+        "functions": [
+          {
+            "name": "evaluate_model",
+            "input": [
+              {
+                "type": "Model",
+                "name": "model",
+                "description": "Dataloop Model Entity"
+              },
+              {
+                "type": "Dataset",
+                "name": "dataset",
+                "description": "Dataloop Dataset Entity"
+              },
+              {
+                "type": "Json",
+                "name": "filters",
+                "description": "Dataloop Filter DQL"
+              }
+            ],
+            "output": [
+              {
+                "type": "Model",
+                "name": "model",
+                "description": "Dataloop Model Entity"
+              },
+              {
+                "type": "Dataset",
+                "name": "dataset",
+                "description": "Dataloop Dataset Entity"
+              }
+            ],
+            "displayName": "Evaluate a Model",
+            "displayIcon": "",
+            "description": "Function to evaluate VILA model performance"
+          },
+          {
+            "name": "predict_items",
+            "input": [
+              {
+                "type": "Item[]",
+                "name": "items",
+                "description": "List of items to run inference on"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item[]",
+                "name": "items",
+                "description": "The same input images for prediction."
+              },
+              {
+                "type": "Annotation[]",
+                "name": "annotations",
+                "description": "The predicted annotations."
+              }
+            ],
+            "displayName": "Predict Items",
+            "displayIcon": "",
+            "description": "VILA Model Adapter Predict Items - processes text, image, and video inputs"
+          },
+          {
+            "name": "predict_dataset",
+            "input": [
+              {
+                "type": "Dataset",
+                "name": "dataset",
+                "description": "Dataloop Dataset Entity"
+              },
+              {
+                "type": "Json",
+                "name": "filters",
+                "description": "Dataloop Filter DQL"
+              }
+            ],
+            "output": [
+            ],
+            "displayName": "Predict Dataset",
+            "displayIcon": "",
+            "description": "VILA Model Adapter Predict Dataset - processes text, image, and video inputs from a dataset"
+          }
+        ]
+      }
+    ],
+    "models": [
+      {
+        "name": "nvila-8b",
+        "moduleName": "vila-model-adapter-module",
+        "scope": "project",
+        "status": "pre-trained",
+        "configuration": {
+          "model_path": "Efficient-Large-Model/NVILA-8B",
+          "conv_mode": "auto",
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "top_p": 0.9,
+          "stream": false
+        },
+        "description": "NVILA-8B is a medium-sized, efficient vision language model designed for multimodal understanding, offering a good balance between performance and efficiency."
+      },
+      {
+        "name": "nvila-lite-8b",
+        "moduleName": "vila-model-adapter-module",
+        "scope": "project",
+        "status": "pre-trained",
+        "configuration": {
+          "model_path": "Efficient-Large-Model/NVILA-Lite-8B",
+          "conv_mode": "auto",
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "top_p": 0.9,
+          "stream": false
+        },
+        "description": "NVILA-Lite-8B is an optimized version of NVILA-8B, designed for efficient deployment while maintaining good performance for multimodal tasks."
+      },
+      {
+        "name": "vila-1.5-3b",
+        "moduleName": "vila-model-adapter-module",
+        "scope": "project",
+        "status": "pre-trained",
+        "configuration": {
+          "model_path": "Efficient-Large-Model/VILA1.5-3b",
+          "conv_mode": "vicuna_v1",
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "top_p": 0.9,
+          "stream": false
+        },
+        "description": "VILA-1.5-3B is a compact vision language model optimized for both image and video understanding, suitable for deployment on edge devices."
+      }
+    ]
+  }
+}
