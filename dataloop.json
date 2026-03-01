@@ -1,6 +1,6 @@
 {
-  "name": "vila-model-adapter-husam",
-  "version": "0.0.11",
+  "name": "vila-model-adapter",
+  "version": "0.0.1",
   "attributes": {
     "Provider": "NVIDIA",
     "Category": "Model",
@@ -14,9 +14,14 @@
     "License": "Apache 2.0",
     "Deployed By": "Dataloop"
   },
-  "displayName": "VILA Model Adapter Husam",
+  "displayName": "VILA Model Adapter",
   "description": "VILA Vision Language Model adapter for multimodal (text, image, video) processing by NVlabs (NVIDIA). VILA is a family of efficient vision language models designed for multi-image and video understanding.",
-  "scope": "project",
+  "scope": "public",
+  "codebase": {
+    "type": "git",
+    "gitUrl": "https://github.com/dataloop-ai-apps/vila-model-adapter.git",
+    "gitTag": "0.0.1"
+  },
   "components": {
     "computeConfigs": [
       {
