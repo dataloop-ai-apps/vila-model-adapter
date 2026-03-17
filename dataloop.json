@@ -167,7 +167,7 @@
         "description": "NVILA-Lite-8B is an optimized version of NVILA-8B, designed for efficient deployment while maintaining good performance for multimodal tasks."
       },
       {
-        "name": "vila-1.5-3b",
+        "name": "vila-1p5-3b",
         "moduleName": "vila-model-adapter-module",
         "scope": "project",
         "status": "pre-trained",
