@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 logger = logging.getLogger("vila-adapter")
 
@@ -86,14 +86,19 @@ class ModelAdapter(dl.BaseModelAdapter):
             server_script = os.path.join(adapter_dir, "custom_server.py")
             if not os.path.exists("/opt/conda/envs/vila_env/bin/python"):
                 logger.warning("VILA Python executable not found at /opt/conda/envs/vila_env/bin/python. Please check your environment setup.")
-            server_command = f"/opt/conda/envs/vila_env/bin/python -u -W ignore {server_script} --model-path {model_path} --conv-mode {conv_mode} --port {port}"
+            server_command = [
+                "/opt/conda/envs/vila_env/bin/python", "-u", "-W", "ignore",
+                server_script,
+                "--model-path", str(model_path),
+                "--conv-mode", str(conv_mode),
+                "--port", str(port),
+            ]
             logger.info(f"Server command: {server_command}")
             logger.info(f"Starting VILA server with model: {model_path} (cwd={adapter_dir})")
             self.vila_server_process = subprocess.Popen(
                 server_command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=True,
                 text=True,
                 bufsize=1,
                 cwd=adapter_dir,
@@ -151,7 +156,7 @@ class ModelAdapter(dl.BaseModelAdapter):
                 logger.info(f"[model response] {content}")
                 yield content
 
-        except Exception as e:
+        except (APIConnectionError, APIStatusError, APITimeoutError) as e:
             logger.error(f"Error calling VILA model via OpenAI client: {e}")
             raise
 
@@ -197,7 +202,7 @@ class ModelAdapter(dl.BaseModelAdapter):
                 if stats:
                     free, total, used = stats
                     logger.info(f"GPU memory - total: {total} MB, used: {used} MB, free: {free} MB")
-            except Exception:
+            except (subprocess.SubprocessError, ValueError, OSError):
                 logger.exception("Unexpected error in GPU monitor thread")
             time.sleep(GPU_LOG_INTERVAL)
 
@@ -234,10 +239,9 @@ class ModelAdapter(dl.BaseModelAdapter):
             # NOTE: Assuming mp4 for the data URI type, might need adjustment if other types are common
             encoded_video = base64.b64encode(video_bytes).decode('utf-8')
             return f"data:video/mp4;base64,{encoded_video}"
-        except Exception as e:
-            # Wrap the original exception for better debugging
-            logger.error(f"Error downloading video from dataloop ({video_url}): {str(e)}", exc_info=True)
-            raise ValueError(f"Error downloading video from dataloop: {str(e)}") from e
+        except (ValueError, OSError, IOError) as e:
+            logger.error(f"Error downloading video from dataloop ({video_url})", exc_info=True)
+            raise ValueError("Error downloading video from dataloop") from e
 
     def _get_image_base64(self, image_path: str) -> str:
         """Read an image from *image_path* and return a base-64 encoded string."""
@@ -263,7 +267,7 @@ class ModelAdapter(dl.BaseModelAdapter):
                 try:
                     data_uri = self._get_video_base64_from_dataloop_url(link)
                     processed_content.append({"type": "video_url", "video_url": {"url": data_uri}})
-                except Exception as e:
+                except (ValueError, OSError, IOError) as e:
                     logger.warning(f"Skipping Dataloop video link {link} due to error: {e}")
             else:
                 processed_content.append({"type": "video_url", "video_url": {"url": link}})
@@ -314,7 +318,7 @@ class ModelAdapter(dl.BaseModelAdapter):
                                     new_video_info = video_info.copy()
                                     new_video_info["url"] = data_uri
                                     new_content_list.append({"type": "video_url", "video_url": new_video_info})
-                                except Exception as e:
+                                except (ValueError, OSError, IOError) as e:
                                     logger.warning(f"Skipping Dataloop video URL {original_url} due to error: {e}")
                             else:
                                 # Pass through non-Dataloop or already processed video URLs
