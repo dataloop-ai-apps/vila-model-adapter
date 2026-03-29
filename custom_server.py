@@ -160,7 +160,7 @@ def _save_bytes_to_temp_video_file(video_bytes: bytes, original_url: str) -> str
 
 # Helper function to get video bytes from a regular URL
 def _get_video_bytes_from_url(video_url: str) -> bytes:
-    response = requests.get(video_url)
+    response = requests.get(video_url, timeout=60)
     if not response.ok:
         raise ValueError(f"Failed to download video from {video_url}: HTTP {response.status_code} - {response.reason}")
     return response.content
@@ -217,7 +217,7 @@ def load_video(video_url: str) -> str:
 
 def load_image(image_url: str) -> PILImage:
     if image_url.startswith("http") or image_url.startswith("https"):
-        response = requests.get(image_url)
+        response = requests.get(image_url, timeout=60)
         image = PILImage.open(BytesIO(response.content)).convert("RGB")
     else:
         match_results = IMAGE_CONTENT_BASE64_REGEX.match(image_url)
@@ -377,13 +377,14 @@ async def chat_completions(request: ChatCompletionRequest):
                         {"message": ChatMessage(role="assistant", content=resp_content)}
                     ],
                 }
-    except Exception as e:
+    except (ValueError, TypeError, RuntimeError, torch.cuda.OutOfMemoryError) as e:
         if globallock.locked():
             globallock.release()
-            
+
+        print(f"[Error] chat_completions failed: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)},
+            content={"error": "Internal server error"},
         )
     finally:
         pass
